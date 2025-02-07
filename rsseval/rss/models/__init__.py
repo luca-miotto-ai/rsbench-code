@@ -5,7 +5,7 @@ import importlib
 def get_all_models():
     return [
         model.split(".")[0]
-        for model in os.listdir("models")
+        for model in os.listdir("C:\\Users\\lucam\\source\\repos\\rsbench-code\\rsseval\\rss\\models")
         if not model.find("__") > -1 and "py" in model
     ]
 

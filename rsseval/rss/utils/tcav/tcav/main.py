@@ -1,15 +1,22 @@
-from torchvision import transforms
-from tcav import TCAV
+import os
+import sys
 import torch
+
+from tcav import TCAV
+from torchvision import transforms
+
 from model_wrapper import ModelWrapper
 from mydata import MyDataset
-import os
+
 from argparse import Namespace
 from pad import PadCoinToss, PadLeftDefine, PadRightDefine
 from collections import OrderedDict
 from torch.utils.data import DataLoader
 
 torch.multiprocessing.set_sharing_strategy("file_system")
+
+data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+sys.path.insert(0, data_dir)
 
 from datasets.boia import BOIA
 from datasets.sddoia import SDDOIA
@@ -62,7 +69,6 @@ def data_loader(base_path, dataset_name):
     train_loader = DataLoader(image_dataset_train, batch_size=1, num_workers=0)
     return train_loader
 
-
 def validate(
     model, dataset_name, validloader, concept_dict, class_dict, seed, model_name, add=""
 ):
@@ -101,7 +107,6 @@ def validate(
         f"Done! output/concept_presence_{dataset_name}_{model_name}_{seed}_{extract_layer}{add}.npy"
     )
 
-
 def get_model(modelname, encoder, args):
     if modelname.lower() == "boiann":
         return BOIAnn(encoder=encoder, args=args)
@@ -123,7 +128,6 @@ def get_model(modelname, encoder, args):
         return MNMATHnn(encoder=encoder, args=args)
 
     raise NotImplementedError(f"Model {modelname} missing")
-
 
 def get_dataset(datasetname, args):
     if datasetname.lower() == "boia":
@@ -151,23 +155,23 @@ def get_dataset(datasetname, args):
 
     raise NotImplementedError(f"Dataset {datasetname} missing")
 
-
 def setup():
+
     args = Namespace(
         backbone="neural",  # "conceptizer",
         preprocess=0,
         finetuning=0,
-        batch_size=1,
-        n_epochs=20,
+        batch_size=64,
+        n_epochs=2,
         validate=1,
-        dataset="clipsddoia",
+        dataset="shortmnist",
         lr=0.001,
-        exp_decay=0.99,
+        exp_decay=0.9,
         warmup_steps=1,
         wandb=None,
-        task="boia",
+        task="addition",
         boia_model="ce",
-        model="sddoiann",
+        model="mnistnn",
         c_sup=0,
         which_c=-1,
         joint=True,
@@ -191,7 +195,6 @@ def setup():
         model.net.to(model.device)
 
     return args, dataset, model
-
 
 def mnist_tcav_setup():
     class_dict = {
@@ -232,8 +235,8 @@ def mnist_tcav_setup():
     ]
 
     tmp_concept_dict = {}
-    for dirname in os.listdir("../data/concepts"):
-        fullpath = os.path.join("../data/concepts", dirname)
+    for dirname in os.listdir("rsseval\\rss\\data\\concepts"):
+        fullpath = os.path.join("rsseval\\rss\\data\\concepts", dirname)
         if os.path.isdir(fullpath):
             tmp_concept_dict[dirname] = data_loader(fullpath, args.dataset)
 
@@ -242,7 +245,6 @@ def mnist_tcav_setup():
         concept_dict[c] = tmp_concept_dict[c]
 
     return validloader, class_dict, concept_dict
-
 
 def kand_tcav_setup(is_clip=False):
     class_dict = {
@@ -277,7 +279,6 @@ def kand_tcav_setup(is_clip=False):
         concept_dict[c] = tmp_concept_dict[c]
 
     return validloader, class_dict, concept_dict
-
 
 def boia_tcav_setup():
     class_dict = {
@@ -330,7 +331,6 @@ def boia_tcav_setup():
         concept_dict[c] = tmp_concept_dict[c]
 
     return validloader, class_dict, concept_dict
-
 
 def sddoia_tcav_setup(full=False):
     class_dict = {
@@ -432,7 +432,6 @@ def xor_tcav_setup():
     for c in concepts_order:
         concept_dict[c] = tmp_concept_dict[c]
     return validloader, class_dict, concept_dict
-
 
 def mnmath_tcav_setup():
     class_dict = {
@@ -550,6 +549,7 @@ def mnmath_tcav_setup():
     return validloader, class_dict, concept_dict
 
 if __name__ == "__main__":
+
     use_gpu = torch.cuda.is_available()
 
     if use_gpu:
@@ -566,7 +566,7 @@ if __name__ == "__main__":
     # get everything
     args, dataset, model = setup()
 
-    seeds = [123, 456, 789, 1011, 1213]
+    seeds = [0]
     model_path = f"best_model_{args.dataset}_{args.model}"
     sddoia_full = ""
     to_add = ""  # "_padd_random"
@@ -578,6 +578,7 @@ if __name__ == "__main__":
         print("Doing seed", seed)
 
         current_model_path = f"{model_path}_{seed}.pth"
+        current_model_path = os.path.join("rsseval\\rss", current_model_path) # only in debug mode 
 
         if not os.path.exists(current_model_path):
             print(f"{current_model_path} is missing...")

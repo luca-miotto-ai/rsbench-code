@@ -23,7 +23,7 @@ from utils.generative import conditional_gen, recon_visaulization
 from utils import fprint
 import matplotlib.pyplot as plt
 
-from warmup_scheduler import GradualWarmupScheduler
+# from warmup_scheduler import GradualWarmupScheduler
 from sklearn.metrics import multilabel_confusion_matrix, confusion_matrix
 import numpy as np
 
@@ -344,8 +344,8 @@ def train(model: MnistDPL, dataset: BaseDataset, _loss: ADDMNIST_DPL, args):
     dataset.print_stats()
     scheduler = torch.optim.lr_scheduler.ExponentialLR(model.opt, args.exp_decay)
     w_scheduler = None
-    if args.warmup_steps > 0:
-        w_scheduler = GradualWarmupScheduler(model.opt, 1.0, args.warmup_steps)
+    # if args.warmup_steps > 0:
+    #     w_scheduler = GradualWarmupScheduler(model.opt, 1.0, args.warmup_steps)
 
     if not args.tuning and args.wandb is not None:
         fprint("\n---wandb on\n")
