@@ -186,13 +186,7 @@ lmao.png
 *.zip
 
 # FOR LICENSE
-boia_config/shapes/TL_BASE.blend
-boia_config/shapes/TL_G.blend
-boia_config/shapes/TL_R.blend
-boia_config/shapes/TL_Y.blend
-boia_config/shapes/TLG.blend
-boia_config/shapes/TLR.blend
-boia_config/shapes/TLY.blend
+boia_config/shapes/
 
 # properties
 clevr_config/properties_2.json

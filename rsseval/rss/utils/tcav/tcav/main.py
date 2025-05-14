@@ -8,6 +8,7 @@ from torchvision import transforms
 from model_wrapper import ModelWrapper
 from mydata import MyDataset
 
+from itertools import product
 from argparse import Namespace
 from pad import PadCoinToss, PadLeftDefine, PadRightDefine
 from collections import OrderedDict
@@ -235,13 +236,15 @@ def mnist_tcav_setup():
     ]
 
     tmp_concept_dict = {}
-    for dirname in os.listdir("rsseval\\rss\\data\\concepts"):
-        fullpath = os.path.join("rsseval\\rss\\data\\concepts", dirname)
+    reference_path = os.path.join("rsseval\\rss\\data\\concepts", "addmnist") # TEMP
+    for dirname in os.listdir(reference_path): 
+        fullpath = os.path.join(reference_path, dirname)
         if os.path.isdir(fullpath):
             tmp_concept_dict[dirname] = data_loader(fullpath, args.dataset)
 
     concept_dict = OrderedDict()
-    for c in concepts_order:
+    for c1, c2 in product(concepts_order, repeat=2): # TEMP
+        c = c1 + c2
         concept_dict[c] = tmp_concept_dict[c]
 
     return validloader, class_dict, concept_dict

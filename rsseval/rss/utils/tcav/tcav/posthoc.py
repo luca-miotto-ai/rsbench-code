@@ -6,16 +6,22 @@ Concept Activation Regions (CARs):
 https://github.com/JonathanCrabbe/CARs
 """
 
-import abc
 import torch
 import optuna
 import logging
 import numpy as np
 import torch.nn.functional as F
 
-from abc import ABC
+from typing import Callable
+from abc import ABC, abstractmethod
+
 from sklearn.svm import SVC
+from sklearn.base import BaseEstimator
+from sklearn.base import ClassifierMixin
+from sklearn.svm._base import BaseSVC
 from sklearn.linear_model import SGDClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model._base import LinearClassifierMixin
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import permutation_test_score
@@ -23,78 +29,140 @@ from sklearn.model_selection import permutation_test_score
 class PostHocConceptExplainer(ABC):
     """
     An abstract class that contains the interface 
-    for any post-hoc concept explainer
+    for a generic post-hoc concept explainer
     """
 
-    @abc.abstractmethod
-    def __init__(self, device: torch.device, batch_size: int = 50):
-        self.concept_reps = None
-        self.concept_labels = None
-        self.classifier = None
+    def __init__(self, classifier: ClassifierMixin, device: torch.device, batch_size: int = 50):
+        """
+        Parameters
+        ----------
+        classifier: ClassifierMixin
+            Concept classifier (e.g. SGDClassifier, SVC, etc.)
+        device: torch.device
+            Device to run the model on (e.g. 'cuda' or 'cpu')
+        batch_size: int, optional
+            Batch size for processing the data (default is 50)
+        """
+        if not isinstance(device, torch.device):
+            raise TypeError("Device must be a torch device")
+        if not isinstance(batch_size, int) or batch_size <= 0:
+            raise ValueError("Batch size must be a positive integer")
+        if not isinstance(classifier, ClassifierMixin):
+            raise TypeError("Classifier must be a subclass of ClassifierMixin")
+        if not PostHocConceptExplainer._hasmethod(classifier, "fit"):
+            raise ValueError("Classifier must implement the fit method")
+        if not PostHocConceptExplainer._hasmethod(classifier, "predict"):
+            raise ValueError("Classifier must implement the predict method")
+        self.representations = None
+        self.presence = None
+        self.significance = {}
         self.device = device
         self.batch_size = batch_size
+        self.classifier = classifier
 
-    @abc.abstractmethod
-    def fit(self, concept_reps: np.ndarray, concept_labels: np.ndarray):
+    def _hasmethod(obj: object, attr: str) -> bool:
         """
-        Fit the concept classifier to the dataset (latent_reps, concept_labels)
-        Args:
-            concept_reps: latent representations of the examples illustrating the concept
-            concept_labels: labels indicating the presence (1) or absence (0) of the concept
-        """
-        assert concept_reps.shape[0] == concept_labels.shape[0]
-        self.concept_reps = concept_reps
-        self.concept_labels = concept_labels
+        Check if the object has the given method
 
-    @abc.abstractmethod
-    def predict(self, latent_reps: np.ndarray) -> np.ndarray:
+        Parameters
+        ----------
+        obj: object
+            Object to check
+        attr: str
+            Name of the method to check
+
+        Returns
+        -------
+            If the object has the method
         """
-        Predicts the presence or absence of the concept for the latent representations
-        Args:
-            latent_reps: representations of the test examples
-        Returns:
-            concepts labels indicating the presence (1) or absence (0) of the concept
+        return hasattr(obj, attr) and callable(getattr(obj, attr))
+
+    def fit(self, representations: np.ndarray, presence: np.ndarray):
+        """
+        Fit the concept classifier to the dataset (concept representations and presence)
+
+        Parameters
+        ----------
+        representations: np.ndarray
+            Latent representations of the training examples illustrating the concept
+        presence: np.ndarray
+            Boolean array indicating presence or absence of the concept in each example
+        """
+        if representations.shape[0] == presence.shape[0]:
+            raise ValueError("Representations length does not match presence")
+        self.representations = representations
+        self.presence = presence
+        self.classifier.fit(representations, presence)
+
+    def predict(self, representations: np.ndarray) -> np.ndarray:
+        """
+        Predicts the presence or absence of the concept given the latent representations
+        
+        Parameters
+        ----------
+        representations: np.ndarray
+            Latent representations of the test examples illustrating the concept
+        
+        Returns
+        -------
+        Boolean array indicating presence or absence of the concept
+        """
+        return self.classifier.predict(representations)
+
+    @abstractmethod
+    def concept_importance(self, representations: np.ndarray) -> np.ndarray:
+        """
+        Predicts the relevance of a concept given the latent representations
+        
+        Parameters
+        ----------
+        representations: np.ndarray
+            Latent representations of the test examples
+        
+        Returns
+        -------
+        Array of concept importance scores for each example
         """
 
-    @abc.abstractmethod
-    def concept_importance(self, latent_reps: np.ndarray) -> np.ndarray:
+    @abstractmethod
+    def significant(self, test='permutation', alpha=0.05,  n_jobs=1, **kwargs) -> bool:
         """
-        Predicts the relevance of a concept for the latent representations
-        Args:
-            latent_reps: representations of the test examples
-        Returns:
-            concepts scores for each example
-        """
+        Computes the p-value of the given significance test applied on the previously calculated \\
+        concept presence and decides if significant according to the given significance level `alpha`
 
-    @abc.abstractmethod
-    def permutation_test(
-        self,
-        concept_reps: np.ndarray,
-        concept_labels: np.ndarray,
-        n_perm: int = 100,
-        n_jobs: int = -1,
-    ) -> float:
-        """
-        Computes the p-value of the concept-label permutation test
-        Args:
-            concept_labels: concept labels indicating the presence (1) or absence (0) of the concept
-            concept_reps: representation of the examples
-            n_perm: number of permutations
-            n_jobs: number of jobs running in parallel
+        Parameters
+        ----------
+        test: str, optional
+            Type of significance test to perform
+        alpha: float, optional
+            Significance level of the test
+        n_jobs: int, optional
+            Number of jobs to run in parallel
 
-        Returns:
-            p-value of the statistical significance test
-        """
+        Returns
+        -------
+        If the concept is statistically significant, up to significance level
 
-    def get_concept_reps(self, positive_set: bool) -> np.ndarray:
+        Remarks
+        -------
+        - Tests currently implemented: `permutation`
+        - Significace tests are performed on the concept presence wrt stored representations
+        - The same classifier is used for significance test as the one used to classify concepts
+        - Optional arguments for each implemented test:
+            - `permutation` allows for optional argument `n_perm` to specify number of permutations
         """
-        Get the latent representation of the positive/negative examples
-        Args:
-            positive_set: True returns positive examples, False returns negative examples
-        Returns:
-            Latent representations of the requested set
-        """
-        return self.concept_reps[self.concept_labels == int(positive_set)]
+        if test == 'permutation':
+            n_perm = kwargs.get('n_perm', 100)
+            _, _, p_value = permutation_test_score(
+                self.classifier,
+                self.representations,
+                self.presence,
+                n_permutations=n_perm,
+                n_jobs=n_jobs,
+            )
+        else:
+            raise ValueError(f"Invalid significance test \"{test}\"")
+        return p_value < alpha
 
 class CAV(PostHocConceptExplainer):
     """
@@ -106,91 +174,46 @@ class CAV(PostHocConceptExplainer):
         International Conference on Machine Learning (2017).
     """
     
-    def __init__(self, device: torch.device, batch_size: int = 50):
-        super(CAV, self).__init__(device, batch_size)
-
-    def fit(self, concept_reps: np.ndarray, concept_labels: np.ndarray) -> None:
-        """
-        Fit the concept classifier to the dataset (latent_reps, concept_labels)
-        Args:
-            kernel: kernel function
-            latent_reps: latent representations of the examples illustrating the concept
-            concept_labels: labels indicating the presence (1) or absence (0) of the concept
-        """
-        super(CAV, self).fit(concept_reps, concept_labels)
-        classifier = SGDClassifier(alpha=0.01, max_iter=1000, tol=1e-3)
-        classifier.fit(concept_reps, concept_labels)
-        self.classifier = classifier
-
-    def predict(self, latent_reps: np.ndarray) -> np.ndarray:
-        """
-        Predicts the presence or absence of the concept for the latent representations
-        Args:
-            latent_reps: representations of the test examples
-        Returns:
-            concepts labels indicating the presence (1) or absence (0) of the concept
-        """
-        return self.classifier.predict(latent_reps)
+    def __init__(self, classifier: LinearClassifierMixin, device: torch.device, batch_size: int = 50):
+        super().__init__(classifier, device, batch_size)
+        if not isinstance(classifier, LinearClassifierMixin):
+            raise TypeError("Classifier must be a subclass of LinearClassifierMixin")
 
     def concept_importance(
         self,
-        latent_reps: np.ndarray,
-        labels: torch.Tensor = None,
-        num_classes: int = None,
-        rep_to_output: callable = None) -> np.ndarray:
+        representations: np.ndarray,
+        labels: np.ndarray,
+        num_classes: int,
+        repr_to_output: Callable
+    ) -> np.ndarray:
         """
-        Predicts the relevance of a concept for the latent representations
-        Args:
-            latent_reps: representations of the test examples
-            labels: the labels associated to the representations one-hot encoded
-            num_classes: the number of classes
-            rep_to_output: black-box mapping the representation space to the output space
-        Returns:
-            concepts scores for each example
+        Predicts the relevance of a concept given the latent representations
+        
+        Parameters
+        ----------
+        representations: np.ndarray
+            Latent representations of the test examples
+        labels: np.ndarray
+            Labels associated to the representations
+        num_classes: int
+            Total number of classes for one-hot encoding
+        repr_to_output: Callable 
+            Black-box mapping the representation space into the output space
+
+        Returns
+        -------
+        Concept scores for each example (i.e. for each representation)
         """
         one_hot_labels = F.one_hot(labels, num_classes).to(self.device)
-        latent_reps = torch.from_numpy(latent_reps).to(self.device).requires_grad_()
-        outputs = rep_to_output(latent_reps)
-        grads = torch.autograd.grad(outputs, latent_reps, grad_outputs=one_hot_labels)[
-            0
-        ]
-        cav = self.get_activation_vector()
+        latent_repr = torch.from_numpy(representations).to(self.device).requires_grad_()
+        outputs = repr_to_output(latent_repr)
+        grads = torch.autograd.grad(outputs, latent_repr, grad_outputs=one_hot_labels)[0]
+        cav = torch.tensor(self.classifier.coef_).to(self.device).float()
         if len(grads.shape) > 2:
             grads = grads.flatten(start_dim=1)
         if len(cav.shape) > 2:
             cav = cav.flatten(start_dim=1)
-        return torch.einsum("bi,bi->b", cav, grads).detach().cpu().numpy()
-
-    def permutation_test(
-        self,
-        concept_reps: np.ndarray,
-        concept_labels: np.ndarray,
-        n_perm: int = 100,
-        n_jobs: int = -1,
-    ) -> float:
-        """
-        Computes the p-value of the concept-label permutation test
-        Args:
-            concept_labels: concept labels indicating the presence (1) or absence (0) of the concept
-            concept_reps: representation of the examples
-            n_perm: number of permutations
-            n_jobs: number of jobs running in parallel
-
-        Returns:
-            p-value of the statistical significance test
-        """
-        classifier = SGDClassifier(alpha=0.01, max_iter=1000, tol=1e-3)
-        score, permutation_scores, p_value = permutation_test_score(
-            classifier,
-            concept_reps,
-            concept_labels,
-            n_permutations=n_perm,
-            n_jobs=n_jobs,
-        )
-        return p_value
-
-    def get_activation_vector(self):
-        return torch.tensor(self.classifier.coef_).to(self.device).float()
+        return torch.einsum("ij,ij->i", cav, grads).detach().cpu().numpy()
 
 class CAR(PostHocConceptExplainer):
     """
@@ -205,16 +228,19 @@ class CAR(PostHocConceptExplainer):
     
     def __init__(
         self,
+        classifier: BaseSVC,
         device: torch.device,
         batch_size: int = 100,
         kernel: str = "rbf",
         kernel_width: float = None,
     ):
-        super(CAR, self).__init__(device, batch_size)
+        super().__init__(classifier, device, batch_size)
+        if not isinstance(classifier, BaseSVC):
+            raise TypeError("Classifier must be a subclass of BaseSVC")
         self.kernel = kernel
         self.kernel_width = kernel_width
 
-    def fit(self, concept_reps: np.ndarray, concept_labels: np.ndarray) -> None:
+    def fit(self, classifier: ClassifierMixin, concept_reps: np.ndarray, concept_labels: np.ndarray) -> None:
         """
         Fit the concept classifier to the dataset (latent_reps, concept_labels)
         Args:
@@ -276,7 +302,7 @@ class CAR(PostHocConceptExplainer):
         )
         return p_value
 
-    def get_kernel_function(self) -> callable:
+    def get_kernel_function(self) -> Callable:
         """
         Get the kernel funtion underlying the CAR
         Returns: kernel function as a callable with arguments (h1, h2)
@@ -393,7 +419,7 @@ class CAR(PostHocConceptExplainer):
         latent_reps: np.ndarray,
         labels: torch.Tensor = None,
         num_classes: int = None,
-        rep_to_output: callable = None,
+        rep_to_output: Callable = None,
     ) -> np.ndarray:
         """
         Compute the concept sensitivity of a set of predictions

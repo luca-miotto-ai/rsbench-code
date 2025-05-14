@@ -255,7 +255,7 @@ def load_data(data_file, data_folder, c_sup=1, which_c=[-1], args=None):
     val_set = nMNIST("val", data_path=data_path, args=args)
     test_set = nMNIST("test", data_path=data_path, args=args)
 
-    r_seq = np.load("rsseval\\rss\\data\\rn.npy")
+    r_seq = np.load("C:\\Users\\lucam\\source\\repos\\rsbench-code\\rsseval\\rss\\data\\rn.npy")
     # Generate deterministic random sequence
     # r_seq = generate_r_seq(len(train_set))
 
