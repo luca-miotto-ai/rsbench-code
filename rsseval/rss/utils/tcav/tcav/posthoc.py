@@ -219,133 +219,81 @@ class CAR(PostHocConceptExplainer):
     """
     Concept Activation Regions (CAR) post-hoc concept explainer
 
-    References:
-        Crabbé, Jonathan, and Mihaela van der Schaar. 
-        "Concept Activation Regions: A Generalized Framework 
-        for Concept-Based Explanations." Advances in Neural 
+    References
+    ----------
+        Crabbé, Jonathan, and Mihaela van der Schaar. \\
+        "Concept Activation Regions: A Generalized Framework \\
+        for Concept-Based Explanations." Advances in Neural \\
         Information Processing Systems (2022).
     """
     
-    def __init__(
-        self,
-        classifier: BaseSVC,
-        device: torch.device,
-        batch_size: int = 100,
-        kernel: str = "rbf",
-        kernel_width: float = None,
-    ):
+    def __init__(self, classifier: BaseSVC, device: torch.device, batch_size: int = 100, kernel_width: float = 1.0):
         super().__init__(classifier, device, batch_size)
         if not isinstance(classifier, BaseSVC):
             raise TypeError("Classifier must be a subclass of BaseSVC")
-        self.kernel = kernel
         self.kernel_width = kernel_width
 
-    def fit(self, classifier: ClassifierMixin, concept_reps: np.ndarray, concept_labels: np.ndarray) -> None:
-        """
-        Fit the concept classifier to the dataset (latent_reps, concept_labels)
-        Args:
-            concept_reps: latent representations of the examples illustrating the concept
-            concept_labels: labels indicating the presence (1) or absence (0) of the concept
-        """
-        super(CAR, self).fit(concept_reps, concept_labels)
-        classifier = SVC(kernel=self.kernel)
-        classifier.fit(concept_reps, concept_labels)
-        self.classifier = classifier
-
-    def predict(self, latent_reps: np.ndarray) -> np.ndarray:
-        """
-        Predicts the presence or absence of the concept for the latent representations
-        Args:
-            latent_reps: representations of the test examples
-        Returns:
-            concepts labels indicating the presence (1) or absence (0) of the concept
-        """
-        return self.classifier.predict(latent_reps)
-
-    def concept_importance(self, latent_reps: torch.Tensor) -> torch.Tensor:
-        """
-        Predicts the relevance of a concept for the latent representations
-        Args:
-            latent_reps: representations of the test examples
-        Returns:
-            concepts scores for each example
-        """
-        pos_density = self.concept_density(latent_reps, True)
-        neg_density = self.concept_density(latent_reps, False)
+    def concept_importance(self, representations: np.ndarray) -> np.ndarray:
+        pos_density = self.concept_density(representations, True)
+        neg_density = self.concept_density(representations, False)
         return pos_density - neg_density
 
-    def permutation_test(
-        self,
-        concept_reps: np.ndarray,
-        concept_labels: np.ndarray,
-        n_perm: int = 100,
-        n_jobs: int = -1,
-    ) -> float:
-        """
-        Computes the p-value of the concept-label permutation test
-        Args:
-            concept_labels: concept labels indicating the presence (1) or absence (0) of the concept
-            concept_reps: representation of the examples
-            n_perm: number of permutations
-            n_jobs: number of jobs running in parallel
-
-        Returns:
-            p-value of the statistical significance test
-        """
-        classifier = SVC(kernel=self.kernel)
-        score, permutation_scores, p_value = permutation_test_score(
-            classifier,
-            concept_reps,
-            concept_labels,
-            n_permutations=n_perm,
-            n_jobs=n_jobs,
-        )
-        return p_value
-
-    def get_kernel_function(self) -> Callable:
-        """
-        Get the kernel funtion underlying the CAR
-        Returns: kernel function as a callable with arguments (h1, h2)
-        """
-        if self.kernel == "rbf":
-            if self.kernel_width is not None:
-                kernel_width = self.kernel_width
-            else:
-                kernel_width = 1.0
-            latent_dim = self.concept_reps.shape[-1]
-            # We unstack the tensors to return a kernel matrix of shape len(h1) x len(h2)!
-            return lambda h1, h2: torch.exp(
-                -torch.sum(
-                    ((h1.unsqueeze(1) - h2.unsqueeze(0)) / (latent_dim * kernel_width))
-                    ** 2,
-                    dim=-1,
-                )
-            )
-        elif self.kernel == "linear":
-            return lambda h1, h2: torch.einsum(
-                "abi, abi -> ab", h1.unsqueeze(1), h2.unsqueeze(0)
-            )
-
-    def concept_density(
-        self, latent_reps: torch.Tensor, positive_set: bool
-    ) -> torch.Tensor:
+    def concept_density(self, representations: np.ndarray, positive_set: bool) -> torch.Tensor:
         """
         Computes the concept density for the given latent representations
-        Args:
-            latent_reps: latent representations for which the concept density should be evaluated
-            positive_set: if True, only compute the density for the positive set. If False, only for the negative.
 
+        Parameters
+        ----------
+            representations: np.ndarray
+                Latent representations for which the concept density should be evaluated
+            positive_set: bool
+                If True, only compute for the positive set. Otherwise, only for the negative.
 
-        Returns:
-            The density of the latent representations under the relevant concept set
+        Returns
+        -------
+            Density of the latent representations under the relevant concept set
         """
-        kernel = self.get_kernel_function()
-        latent_reps = latent_reps.to(self.device)
-        concept_reps = torch.from_numpy(self.get_concept_reps(positive_set)).to(
-            self.device
-        )
+        kernel = self._kernel_function()
+        latent_reps = torch.from_numpy(representations).to(self.device)
+        concept_reps = torch.from_numpy(self.get_concept_reps(positive_set)).to(self.device)
         density = kernel(concept_reps, latent_reps).mean(dim=0)
         return density
+
+    def _kernel_function(self) -> Callable:
+        """
+        Get the kernel function underlying the CAR
+
+        Returns
+        -------
+        Kernel function as a callable with arguments (h1, h2)
+        """
+        kernel_type = self.classifier.kernel
+        if kernel_type == "rbf":
+            latent_dim = self.representations.shape[-1]
+            epsilon = 1 / (latent_dim * self.kernel_width)
+            return self._gaussian_rbf(epsilon)
+        elif kernel_type == "linear":
+            return lambda h1, h2: torch.einsum("abi, abi -> ab", h1.unsqueeze(1), h2.unsqueeze(0))
+        else:
+            raise ValueError(f"Unknown kernel type {kernel_type}. " + 
+                    "Currently supported types are 'rbf' and 'linear'.")
+
+    def _gaussian_rbf(self, epsilon: float = 1.0) -> Callable:
+        """
+        Get the Gaussian RBF kernel function
+
+        Parameters
+        ----------
+        epsilon: float, optional
+            Scale parameter for reshaping (default is 1.0)
+
+        Returns
+        -------
+        Gaussian RBF kernel function as a callable with arguments (h1, h2)
+        """
+        return lambda h1, h2: torch.exp(
+            -torch.sum((epsilon * (h1.unsqueeze(1) - h2.unsqueeze(0))) ** 2, dim=-1)
+        )
 
     def tune_kernel_width(self, concept_reps: np.ndarray, concept_labels: np.ndarray):
         """
