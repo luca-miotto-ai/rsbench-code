@@ -60,6 +60,7 @@ class PostHocConceptExplainer(ABC):
         self.batch_size = batch_size
         self.classifier = classifier
 
+    @staticmethod
     def _hasmethod(obj: object, attr: str) -> bool:
         """
         Check if the object has the given method
@@ -109,6 +110,23 @@ class PostHocConceptExplainer(ABC):
         """
         return self.classifier.predict(representations)
 
+    def get_representations(self, positive: bool = True) -> np.ndarray:
+        """
+        Get the latent representations of the concept
+
+        Parameters
+        ----------
+        positive: bool, optional
+            Get the concept representations of the positive/negative set
+
+        Returns
+        -------
+        Either positive or negative representations of the concept
+        """
+        if self.representations is None:
+            raise ValueError("No latent representations available yet!")
+        return self.representations[self.presence == int(positive)]
+
     @abstractmethod
     def concept_importance(self, representations: np.ndarray) -> np.ndarray:
         """
@@ -124,7 +142,6 @@ class PostHocConceptExplainer(ABC):
         Array of concept importance scores for each example
         """
 
-    @abstractmethod
     def significant(self, test='permutation', alpha=0.05,  n_jobs=1, **kwargs) -> bool:
         """
         Computes the p-value of the given significance test applied on the previously calculated \\
@@ -162,7 +179,7 @@ class PostHocConceptExplainer(ABC):
             )
         else:
             raise ValueError(f"Invalid significance test \"{test}\"")
-        return p_value < alpha
+        return bool(p_value < alpha)
 
 class CAV(PostHocConceptExplainer):
     """
@@ -179,15 +196,15 @@ class CAV(PostHocConceptExplainer):
         if not isinstance(classifier, LinearClassifierMixin):
             raise TypeError("Classifier must be a subclass of LinearClassifierMixin")
 
-    def concept_importance(
-        self,
+    def concept_importance(self,
         representations: np.ndarray,
         labels: np.ndarray,
         num_classes: int,
         repr_to_output: Callable
     ) -> np.ndarray:
         """
-        Predicts the relevance of a concept given the latent representations
+        Predicts the relevance of a concept given the latent representations.\\
+        Note that, concept importance for CAV is akin to concept sensitivity.
         
         Parameters
         ----------
@@ -204,7 +221,8 @@ class CAV(PostHocConceptExplainer):
         -------
         Concept scores for each example (i.e. for each representation)
         """
-        one_hot_labels = F.one_hot(labels, num_classes).to(self.device)
+        labels_ = torch.from_numpy(labels).to(self.device)
+        one_hot_labels = F.one_hot(labels_, num_classes).to(self.device)
         latent_repr = torch.from_numpy(representations).to(self.device).requires_grad_()
         outputs = repr_to_output(latent_repr)
         grads = torch.autograd.grad(outputs, latent_repr, grad_outputs=one_hot_labels)[0]
@@ -227,16 +245,24 @@ class CAR(PostHocConceptExplainer):
         Information Processing Systems (2022).
     """
     
-    def __init__(self, classifier: BaseSVC, device: torch.device, batch_size: int = 100, kernel_width: float = 1.0):
+    def __init__(self, 
+            classifier: BaseSVC, 
+            device: torch.device, 
+            batch_size: int = 100, 
+            kernel_width: float = 1.0
+        ):
         super().__init__(classifier, device, batch_size)
         if not isinstance(classifier, BaseSVC):
             raise TypeError("Classifier must be a subclass of BaseSVC")
         self.kernel_width = kernel_width
 
-    def concept_importance(self, representations: np.ndarray) -> np.ndarray:
+    def concept_importance(self, representations: np.ndarray, to_array: bool = True) -> np.ndarray|torch.Tensor:
         pos_density = self.concept_density(representations, True)
         neg_density = self.concept_density(representations, False)
-        return pos_density - neg_density
+        if to_array:
+            return (pos_density - neg_density).detach().cpu().numpy()
+        else:
+            return pos_density - neg_density
 
     def concept_density(self, representations: np.ndarray, positive_set: bool) -> torch.Tensor:
         """
@@ -244,18 +270,18 @@ class CAR(PostHocConceptExplainer):
 
         Parameters
         ----------
-            representations: np.ndarray
-                Latent representations for which the concept density should be evaluated
-            positive_set: bool
-                If True, only compute for the positive set. Otherwise, only for the negative.
+        representations: np.ndarray
+            Latent representations for which the concept density should be evaluated
+        positive_set: bool
+            If True, only compute for the positive set. Otherwise, only for the negative.
 
         Returns
         -------
-            Density of the latent representations under the relevant concept set
+        Density of the latent representations under the relevant concept set
         """
         kernel = self._kernel_function()
         latent_reps = torch.from_numpy(representations).to(self.device)
-        concept_reps = torch.from_numpy(self.get_concept_reps(positive_set)).to(self.device)
+        concept_reps = torch.from_numpy(self.get_representations(positive_set)).to(self.device)
         density = kernel(concept_reps, latent_reps).mean(dim=0)
         return density
 
@@ -271,14 +297,15 @@ class CAR(PostHocConceptExplainer):
         if kernel_type == "rbf":
             latent_dim = self.representations.shape[-1]
             epsilon = 1 / (latent_dim * self.kernel_width)
-            return self._gaussian_rbf(epsilon)
+            return CAR._gaussian_rbf(epsilon)
         elif kernel_type == "linear":
             return lambda h1, h2: torch.einsum("abi, abi -> ab", h1.unsqueeze(1), h2.unsqueeze(0))
         else:
             raise ValueError(f"Unknown kernel type {kernel_type}. " + 
                     "Currently supported types are 'rbf' and 'linear'.")
 
-    def _gaussian_rbf(self, epsilon: float = 1.0) -> Callable:
+    @staticmethod
+    def _gaussian_rbf(epsilon: float = 1.0) -> Callable:
         """
         Get the Gaussian RBF kernel function
 
@@ -295,98 +322,107 @@ class CAR(PostHocConceptExplainer):
             -torch.sum((epsilon * (h1.unsqueeze(1) - h2.unsqueeze(0))) ** 2, dim=-1)
         )
 
-    def tune_kernel_width(self, concept_reps: np.ndarray, concept_labels: np.ndarray):
+    def tune_kernel_width(self, representations: np.ndarray, presence: np.ndarray):
         """
-        Args:
-            concept_reps: training representations
-            concept_labels: training labels
-        Tune the kernel width to achieve good training classification accuracy with a Parzen classifier
-        Returns:
+        Tune the kernel width to achieve good training 
+        classification accuracy with a Parzen classifier
 
+        Parameters
+        ----------
+        representations: np.ndarray
+            Latent representations of the training examples illustrating the concept
+        presence: np.ndarray
+            Boolean array indicating presence or absence of the concept in each example
+        
         """
-        super(CAR, self).fit(concept_reps, concept_labels)
+        super().fit(representations, presence)
 
         def train_acc(trial):
             kernel_width = trial.suggest_float("kernel_width", 0.1, 50)
             self.kernel_width = kernel_width
             density = []
-            for reps_batch in np.split(concept_reps, self.batch_size):
-                density.append(
-                    self.concept_importance(torch.from_numpy(reps_batch)).cpu().numpy()
-                )
+            for reps_batch in np.split(representations, self.batch_size):
+                density.append(self.concept_importance(reps_batch))
             density = np.concatenate(density)
-            return accuracy_score((density > 0).astype(int), concept_labels)
+            return accuracy_score((density > 0).astype(int), presence)
 
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         study = optuna.create_study(direction="maximize")
         study.optimize(train_acc, n_trials=1000)
         self.kernel_width = study.best_params["kernel_width"]
         logging.info(
-            f"Optimal kernel width {self.kernel_width:.3g} with training accuracy {study.best_value:.2g}"
+            f"Optimal kernel width {self.kernel_width:.3g} " + 
+            f"with training accuracy {study.best_value:.2g}"
         )
 
-    def fit_cv(self, concept_reps: np.ndarray, concept_labels: np.ndarray) -> None:
-        """
-        Fit the concept classifier to the dataset (latent_reps, concept_labels) by tuning the kernel width
-        Args:
-            concept_reps: latent representations of the examples illustrating the concept
-            concept_labels: labels indicating the presence (1) or absence (0) of the concept
-        """
-        super(CAR, self).fit(concept_reps, concept_labels)
+    # def fit_cv(self, concept_reps: np.ndarray, concept_labels: np.ndarray) -> None:
+    #     """
+    #     Fit the concept classifier to the dataset (latent_reps, concept_labels) by tuning the kernel width
+    #     Args:
+    #         concept_reps: latent representations of the examples illustrating the concept
+    #         concept_labels: labels indicating the presence (1) or absence (0) of the concept
+    #     """
+    #     super(CAR, self).fit(concept_reps, concept_labels)
 
-        X_train, X_val, y_train, y_val = train_test_split(
-            concept_reps,
-            concept_labels,
-            test_size=int(0.3 * len(concept_reps)),
-            stratify=concept_labels,
-        )
+    #     X_train, X_val, y_train, y_val = train_test_split(
+    #         concept_reps,
+    #         concept_labels,
+    #         test_size=int(0.3 * len(concept_reps)),
+    #         stratify=concept_labels,
+    #     )
 
-        def objective(trial: optuna.Trial) -> float:
-            kernel = trial.suggest_categorical(
-                "kernel", ["linear", "poly", "rbf", "sigmoid"]
-            )
-            gamma = trial.suggest_loguniform("gamma", 1e-3, 1e3)
-            C = trial.suggest_loguniform("C", 1e-3, 1e3)
-            classifier = SVC(kernel=kernel, gamma=gamma, C=C)
-            classifier.fit(X_train, y_train)
-            return accuracy_score(y_val, classifier.predict(X_val))
+    #     def objective(trial: optuna.Trial) -> float:
+    #         kernel = trial.suggest_categorical(
+    #             "kernel", ["linear", "poly", "rbf", "sigmoid"]
+    #         )
+    #         gamma = trial.suggest_loguniform("gamma", 1e-3, 1e3)
+    #         C = trial.suggest_loguniform("C", 1e-3, 1e3)
+    #         classifier = SVC(kernel=kernel, gamma=gamma, C=C)
+    #         classifier.fit(X_train, y_train)
+    #         return accuracy_score(y_val, classifier.predict(X_val))
 
-        optuna.logging.set_verbosity(optuna.logging.WARNING)
-        study = optuna.create_study(direction="maximize")
-        study.optimize(objective, n_trials=200, show_progress_bar=True)
-        best_params = study.best_params
-        self.classifier = SVC(**best_params)
-        self.classifier.fit(concept_reps, concept_labels)
-        self.kernel_width = best_params["gamma"]
-        logging.info(
-            f"Optimal hyperparameters {best_params} with validation accuracy {study.best_value:.2g}"
-        )
+    #     optuna.logging.set_verbosity(optuna.logging.WARNING)
+    #     study = optuna.create_study(direction="maximize")
+    #     study.optimize(objective, n_trials=200, show_progress_bar=True)
+    #     best_params = study.best_params
+    #     self.classifier = SVC(**best_params)
+    #     self.classifier.fit(concept_reps, concept_labels)
+    #     self.kernel_width = best_params["gamma"]
+    #     logging.info(
+    #         f"Optimal hyperparameters {best_params} with validation accuracy {study.best_value:.2g}"
+    #     )
 
-    def concept_sensitivity_importance(
-        self,
-        latent_reps: np.ndarray,
-        labels: torch.Tensor = None,
-        num_classes: int = None,
-        rep_to_output: Callable = None,
+    def concept_sensitivity(self,
+        representations: np.ndarray,
+        labels: np.ndarray,
+        num_classes: int,
+        repr_to_output: Callable
     ) -> np.ndarray:
         """
-        Compute the concept sensitivity of a set of predictions
-        Args:
-            latent_reps: representations of the test examples
-            labels: the labels associated to the representations one-hot encoded
-            num_classes: the number of classes
-            rep_to_output: black-box mapping the representation space to the output space
-        Returns:
-            concepts scores for each example
-        """
-        one_hot_labels = F.one_hot(labels, num_classes).to(self.device)
-        latent_reps = torch.from_numpy(latent_reps).to(self.device).requires_grad_()
-        outputs = rep_to_output(latent_reps)
-        grads = torch.autograd.grad(outputs, latent_reps, grad_outputs=one_hot_labels)[
-            0
-        ]
+        Predicts the relevance of a concept given the latent representations.\\
+        Note that, concept importance for CAV is akin to concept sensitivity.
+        
+        Parameters
+        ----------
+        representations: np.ndarray
+            Latent representations of the test examples
+        labels: np.ndarray
+            Labels associated to the representations
+        num_classes: int
+            Total number of classes for one-hot encoding
+        repr_to_output: Callable 
+            Black-box mapping the representation space into the output space
 
-        densities = self.concept_importance(latent_reps).view((-1, 1))
+        Returns
+        -------
+        Concept scores for each example (i.e. for each representation)
+        """
+        labels_ = torch.from_numpy(labels).to(self.device)
+        one_hot_labels = F.one_hot(labels_, num_classes).to(self.device)
+        latent_repr = torch.from_numpy(representations).to(self.device).requires_grad_()
+        outputs = repr_to_output(latent_repr)
+        grads = torch.autograd.grad(outputs, latent_repr, grad_outputs=one_hot_labels)[0]
+        densities = self.concept_importance(latent_repr, to_array=False).view((-1, 1)) # FIXME: integrate np and torch flows!
         cavs = torch.autograd.grad(
             densities,
             latent_reps,
