@@ -1,6 +1,7 @@
 import os
 import sys
 import torch
+import numpy as np
 
 from tcav import TCAV
 from torchvision import transforms
@@ -41,6 +42,14 @@ from models.mnmathnn import MNMATHnn
 from models.xornn import XORnn
 
 
+############### TEST ###############
+
+from posthoc import CAV
+from sklearn.linear_model import SGDClassifier
+
+####################################
+
+
 def data_loader(base_path, dataset_name):
     data_transforms = transforms.Compose([transforms.ToTensor()])
     embedding = False
@@ -77,26 +86,53 @@ def validate(
     is_boia = True
 
     if dataset_name in ["shortmnist", "clipshortmnist"]:
-        extract_layer = "conv2"  # conv1, conv2, fc1, fc2
+        extract_layer = ["conv2", "fc1", "fc2"]  # conv1, conv2, fc1, fc2
         is_boia = False
     if dataset_name in ["boia", "clipboia"]:
-        extract_layer = "fc1"  # fc1, fc2, fc3, fc4
+        extract_layer = ["fc1"]  # fc1, fc2, fc3, fc4
     if dataset_name in ["sddoia", "clipsddoia"]:
-        extract_layer = "fc2"  # conv1, conv2, conv3, conv4, conv5, conv6, fc1, fc2
+        extract_layer = ["fc2"]  # conv1, conv2, conv3, conv4, conv5, conv6, fc1, fc2
     if dataset_name in ["kandinsky", "minikandinsky", "clipkandinsky"]:
-        extract_layer = "fc2"
+        extract_layer = ["fc2"]
     if dataset_name in ["xor"]:
-        extract_layer = "fc2"
+        extract_layer = ["fc2"]
     if dataset_name in ["mnmath"]:
-        extract_layer = "fc2"
+        extract_layer = ["fc2"]
 
-    model = ModelWrapper(model, [extract_layer], is_boia)
+    model = ModelWrapper(model, extract_layer, is_boia)
     scorer = TCAV(model, validloader, concept_dict, class_dict.values(), 150, is_boia)
 
     print("Generating concepts...")
-    scorer.generate_activations([extract_layer])
+    scorer.generate_activations(extract_layer)
     scorer.load_activations()
     print("Concepts successfully generated and loaded!")
+
+    ############
+    ### TEST ###
+    ############
+
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    
+    for concept, activation in scorer.activations.items():
+        # Create balanced positive and negative sets of concept representations
+        pos_sets, neg_sets = _make_concept_sets(concept, scorer.activations)
+        for layer in activation:
+            # Instantiate post-hoc explainer for concept presence at current layer
+            concept_classifier = SGDClassifier(alpha=0.01, max_iter=1000, tol=1e-3)
+            posthoc_explainer = CAV(concept_classifier, device, batch_size=10)
+            # Restrict representations to current layer
+            pos_set, neg_set = pos_sets[layer], neg_sets[layer]
+            representations = np.concatenate((pos_set, neg_set), axis=0)
+            presence = np.concatenate((np.ones(len(pos_set), dtype=bool), 
+                                       np.zeros(len(neg_set), dtype=bool)))
+            assert len(representations) == len(presence)
+            # Randomly reshuffle positive/negative examples
+            reindexing = np.random.permutation(len(representations))
+            representations_ = representations[reindexing]
+            presence_ = presence[reindexing]
+            # Train concept classifier on the given examples
+            posthoc_explainer.fit(representations_, presence_)
+            # TODO: continue from here...
 
     print("Calculating TCAV scores...")
     scorer.generate_cavs(extract_layer)
@@ -107,6 +143,40 @@ def validate(
     print(
         f"Done! output/concept_presence_{dataset_name}_{model_name}_{seed}_{extract_layer}{add}.npy"
     )
+
+def _make_concept_sets(concept, activations) -> tuple:
+    """
+    Make datasets of positive and negative 
+    concept representations for each layer
+    """
+
+    layers = list(activations[concept].keys())
+    concepts = list(activations.keys())
+    # Positive set of representations of the concept for each layer
+    positive_set = {layer: activations[concept][layer] for layer in layers}
+    # Find negative examples for each layer
+    negative_set = {
+        layer: np.concatenate([
+            activations[cpt][layer]
+            for cpt in concepts 
+            if cpt != concept
+        ]) 
+        for layer in layers
+    }
+    # Randomly choose negative examples making 
+    # balanced positive/negative sets for each layer
+    negative_set = {
+        layer: negative_set[layer][
+            np.random.choice(
+                len(negative_set[layer]), 
+                len(positive_set[layer]),
+                replace=False
+            )]
+        for layer in layers
+    }
+    # Return positive and negative sets
+    return positive_set, negative_set
+
 
 def get_model(modelname, encoder, args):
     if modelname.lower() == "boiann":
