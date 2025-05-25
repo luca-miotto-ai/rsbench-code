@@ -78,6 +78,22 @@ class PostHocConceptExplainer(ABC):
         """
         return hasattr(obj, attr) and callable(getattr(obj, attr))
 
+    @staticmethod
+    def _reshape_2d(representations: np.ndarray) -> np.ndarray:
+        """Reshape N-dimensional representations into 2D matrix"""
+        return representations.reshape(
+            representations.shape[0], 
+            np.prod(representations.shape[1:])
+        )
+
+    @staticmethod
+    def _reshuffle(representations: np.ndarray, presence: np.ndarray) -> tuple:
+        """Randomly reshuffle positive/negative examples"""
+        reindexing = np.random.permutation(len(representations))
+        representations_ = representations[reindexing]
+        presence_ = presence[reindexing]
+        return representations_, presence_
+
     def fit(self, representations: np.ndarray, presence: np.ndarray):
         """
         Fit the concept classifier to the dataset (concept representations and presence)
@@ -89,11 +105,13 @@ class PostHocConceptExplainer(ABC):
         presence: np.ndarray
             Boolean array indicating presence or absence of the concept in each example
         """
-        if representations.shape[0] == presence.shape[0]:
+        if representations.shape[0] != presence.shape[0]:
             raise ValueError("Representations length does not match presence")
         self.representations = representations
         self.presence = presence
-        self.classifier.fit(representations, presence)
+        repr_, pres_ = PostHocConceptExplainer._reshuffle(representations, presence)
+        repr_ = PostHocConceptExplainer._reshape_2d(representations)
+        self.classifier.fit(repr_, pres_)
 
     def predict(self, representations: np.ndarray) -> np.ndarray:
         """
@@ -108,7 +126,8 @@ class PostHocConceptExplainer(ABC):
         -------
         Boolean array indicating presence or absence of the concept
         """
-        return self.classifier.predict(representations)
+        repr_ = PostHocConceptExplainer._reshape_2d(representations)
+        return self.classifier.predict(repr_)
 
     def get_representations(self, positive: bool = True) -> np.ndarray:
         """

@@ -126,13 +126,10 @@ def validate(
             presence = np.concatenate((np.ones(len(pos_set), dtype=bool), 
                                        np.zeros(len(neg_set), dtype=bool)))
             assert len(representations) == len(presence)
-            # Randomly reshuffle positive/negative examples
-            reindexing = np.random.permutation(len(representations))
-            representations_ = representations[reindexing]
-            presence_ = presence[reindexing]
             # Train concept classifier on the given examples
-            posthoc_explainer.fit(representations_, presence_)
-            # TODO: continue from here...
+            posthoc_explainer.fit(representations, presence)
+            # pos_examples = posthoc_explainer.get_representations(True)
+            print("Ciao!")
 
     print("Calculating TCAV scores...")
     scorer.generate_cavs(extract_layer)
