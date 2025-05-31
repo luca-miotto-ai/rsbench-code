@@ -11,7 +11,7 @@ from mydata import MyDataset
 
 from itertools import product
 from argparse import Namespace
-from pad import PadCoinToss, PadLeftDefine, PadRightDefine
+from pad import PadCoinToss, PadLeftDefine
 from collections import OrderedDict
 from torch.utils.data import DataLoader
 
@@ -46,6 +46,8 @@ from models.xornn import XORnn
 
 from posthoc import CAV
 from sklearn.linear_model import SGDClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 
 ####################################
 
@@ -78,6 +80,7 @@ def data_loader(base_path, dataset_name):
     )
     train_loader = DataLoader(image_dataset_train, batch_size=1, num_workers=0)
     return train_loader
+
 
 def validate(
     model, dataset_name, validloader, concept_dict, class_dict, seed, model_name, add=""
@@ -112,63 +115,81 @@ def validate(
     ############
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    
+
     for concept, activation in scorer.activations.items():
         # Create balanced positive and negative sets of concept representations
         pos_sets, neg_sets = _make_concept_sets(concept, scorer.activations)
         for layer in activation:
+            # Experiment parameters and results
+            experiment = {
+                "dataset": dataset_name,
+                "model": model_name,
+                "seed": seed,
+                "concept": concept,
+                "layer": layer,
+            }
             # Instantiate post-hoc explainer for concept presence at current layer
             concept_classifier = SGDClassifier(alpha=0.01, max_iter=1000, tol=1e-3)
             posthoc_explainer = CAV(concept_classifier, device, batch_size=10)
             # Restrict representations to current layer
             pos_set, neg_set = pos_sets[layer], neg_sets[layer]
             representations = np.concatenate((pos_set, neg_set), axis=0)
-            presence = np.concatenate((np.ones(len(pos_set), dtype=bool), 
-                                       np.zeros(len(neg_set), dtype=bool)))
+            presence = np.concatenate(
+                (np.ones(len(pos_set), dtype=bool), 
+                 np.zeros(len(neg_set), dtype=bool))
+            )
             assert len(representations) == len(presence)
-            # Train concept classifier on the given examples
-            posthoc_explainer.fit(representations, presence)
-            # pos_examples = posthoc_explainer.get_representations(True)
-            print("Ciao!")
+            # Split into train and test sets for current concept and layer
+            repr_train, repr_test, pres_train, pres_test = train_test_split(
+                representations, presence, test_size=0.2, random_state=seed
+            )
+            # Train concept classifier on representations at current layer
+            posthoc_explainer.fit(repr_train, pres_train)
+            # Evaluate significance of concept classifier on the training set
+            significant = posthoc_explainer.significant(
+                test='permutation', n_perm=1000, alpha=0.05
+            )
+            if not significant:
+                experiment["significant"] = False
+                continue # Skip to next layer
+            # Predict test concepts on representations at current layer
+            pres_pred = posthoc_explainer.predict(repr_test)
+            # Calculate accuracy of concept classifier
+            accuracy = accuracy_score(pres_test, pres_pred)
+            experiment["accuracy"] = accuracy
+            
 
-    print("Calculating TCAV scores...")
-    scorer.generate_cavs(extract_layer)
-    scorer.calculate_concept_presence(
-        extract_layer,
-        f"output/concept_presence_{dataset_name}_{model_name}_{seed}_{extract_layer}{add}.npy",
-    )
-    print(
-        f"Done! output/concept_presence_{dataset_name}_{model_name}_{seed}_{extract_layer}{add}.npy"
-    )
+    # print("Calculating TCAV scores...")
+    # scorer.generate_cavs(extract_layer)
+    # npy_file = f"output/cavs_{dataset_name}_{model_name}_{seed}_{extract_layer}{add}.npy"
+    # scorer.calculate_concept_presence(extract_layer, npy_file)
+    # print(npy_file)
+
 
 def _make_concept_sets(concept, activations) -> tuple:
     """
-    Make datasets of positive and negative 
-    concept representations for each layer
+    Make datasets of positive and negative
+    concept representations for each layer.
     """
-
     layers = list(activations[concept].keys())
     concepts = list(activations.keys())
     # Positive set of representations of the concept for each layer
     positive_set = {layer: activations[concept][layer] for layer in layers}
     # Find negative examples for each layer
     negative_set = {
-        layer: np.concatenate([
-            activations[cpt][layer]
-            for cpt in concepts 
-            if cpt != concept
-        ]) 
+        layer: np.concatenate(
+            [activations[cpt][layer] for cpt in concepts if cpt != concept]
+        )
         for layer in layers
     }
-    # Randomly choose negative examples making 
+    # Randomly choose negative examples making
     # balanced positive/negative sets for each layer
     negative_set = {
         layer: negative_set[layer][
             np.random.choice(
-                len(negative_set[layer]), 
-                len(positive_set[layer]),
-                replace=False
-            )]
+                len(negative_set[layer]), len(positive_set[layer]), replace=False
+            )
+        ]
         for layer in layers
     }
     # Return positive and negative sets
@@ -197,6 +218,7 @@ def get_model(modelname, encoder, args):
 
     raise NotImplementedError(f"Model {modelname} missing")
 
+
 def get_dataset(datasetname, args):
     if datasetname.lower() == "boia":
         return BOIA(args)
@@ -223,8 +245,8 @@ def get_dataset(datasetname, args):
 
     raise NotImplementedError(f"Dataset {datasetname} missing")
 
-def setup():
 
+def setup():
     args = Namespace(
         backbone="neural",  # "conceptizer",
         preprocess=0,
@@ -263,6 +285,7 @@ def setup():
         model.net.to(model.device)
 
     return args, dataset, model
+
 
 def mnist_tcav_setup():
     class_dict = {
@@ -303,18 +326,19 @@ def mnist_tcav_setup():
     ]
 
     tmp_concept_dict = {}
-    reference_path = os.path.join("rsseval\\rss\\data\\concepts", "addmnist") # TEMP
-    for dirname in os.listdir(reference_path): 
+    reference_path = os.path.join("rsseval\\rss\\data\\concepts", "addmnist")  # TEMP
+    for dirname in os.listdir(reference_path):
         fullpath = os.path.join(reference_path, dirname)
         if os.path.isdir(fullpath):
             tmp_concept_dict[dirname] = data_loader(fullpath, args.dataset)
 
     concept_dict = OrderedDict()
-    for c1, c2 in product(concepts_order, repeat=2): # TEMP
+    for c1, c2 in product(concepts_order, repeat=2):  # TEMP
         c = c1 + c2
         concept_dict[c] = tmp_concept_dict[c]
 
     return validloader, class_dict, concept_dict
+
 
 def kand_tcav_setup(is_clip=False):
     class_dict = {
@@ -349,6 +373,7 @@ def kand_tcav_setup(is_clip=False):
         concept_dict[c] = tmp_concept_dict[c]
 
     return validloader, class_dict, concept_dict
+
 
 def boia_tcav_setup():
     class_dict = {
@@ -401,6 +426,7 @@ def boia_tcav_setup():
         concept_dict[c] = tmp_concept_dict[c]
 
     return validloader, class_dict, concept_dict
+
 
 def sddoia_tcav_setup(full=False):
     class_dict = {
@@ -459,55 +485,48 @@ def sddoia_tcav_setup(full=False):
 
     return validloader, class_dict, concept_dict
 
+
 def xor_tcav_setup():
-    class_dict = {
-        "false": 0,
-        "true": 1
-    }
+    class_dict = {"false": 0, "true": 1}
     _, _, validloader = dataset.get_data_loaders()
-    concepts_order = [
-        "0xxx",
-        "x0xx",
-        "xx0x",
-        "xxx0",
-        "1xxx",
-        "x1xx",
-        "xx1x",
-        "xxx1"
-    ]
+    concepts_order = ["0xxx", "x0xx", "xx0x", "xxx0", "1xxx", "x1xx", "xx1x", "xxx1"]
 
     tmp_concept_dict = {}
     for dirname in os.listdir("../data/xor/concepts"):
         fullpath = os.path.join("../data/xor/concepts", dirname)
         if os.path.isdir(fullpath):
             for i in range(4):
-                
-                concept_name = ''
+                concept_name = ""
                 for j in range(i):
-                    concept_name += 'x'
+                    concept_name += "x"
                 concept_name += dirname
                 for j in range(i + 1, 4):
-                    concept_name += 'x'
+                    concept_name += "x"
                 offset_sx = 28 * i
                 offset_dx = 28 * 4 - offset_sx - 28
                 data_transforms = transforms.Compose(
-                    [PadLeftDefine(offset_sx), PadLeftDefine(offset_dx), transforms.Grayscale(), transforms.ToTensor()]
+                    [
+                        PadLeftDefine(offset_sx),
+                        PadLeftDefine(offset_dx),
+                        transforms.Grayscale(),
+                        transforms.ToTensor(),
+                    ]
                 )
 
                 image_dataset_train = MyDataset(
                     fullpath, transform=data_transforms, embedding=False
                 )
-                tmp_concept_dict[concept_name] = DataLoader(image_dataset_train, batch_size=1, num_workers=0)
+                tmp_concept_dict[concept_name] = DataLoader(
+                    image_dataset_train, batch_size=1, num_workers=0
+                )
     concept_dict = OrderedDict()
     for c in concepts_order:
         concept_dict[c] = tmp_concept_dict[c]
     return validloader, class_dict, concept_dict
 
+
 def mnmath_tcav_setup():
-    class_dict = {
-        "false": 0,
-        "true": 1
-    }
+    class_dict = {"false": 0, "true": 1}
     _, _, validloader = dataset.get_data_loaders()
 
     concepts_order = [
@@ -597,29 +616,36 @@ def mnmath_tcav_setup():
         fullpath = os.path.join("../data/concepts", dirname)
         if os.path.isdir(fullpath):
             for i in range(8):
-                concept_name = ''
+                concept_name = ""
                 for j in range(i):
-                    concept_name += 'x'
+                    concept_name += "x"
                 concept_name += dirname
                 for j in range(i + 1, 8):
-                    concept_name += 'x'
+                    concept_name += "x"
 
                 offset_sx = 28 * i
                 offset_dx = 28 * 8 - offset_sx - 28
                 data_transforms = transforms.Compose(
-                    [PadLeftDefine(offset_sx), PadLeftDefine(offset_dx), transforms.Grayscale(), transforms.ToTensor()]
+                    [
+                        PadLeftDefine(offset_sx),
+                        PadLeftDefine(offset_dx),
+                        transforms.Grayscale(),
+                        transforms.ToTensor(),
+                    ]
                 )
                 image_dataset_train = MyDataset(
                     fullpath, transform=data_transforms, embedding=False
                 )
-                tmp_concept_dict[concept_name] = DataLoader(image_dataset_train, batch_size=1, num_workers=0)
+                tmp_concept_dict[concept_name] = DataLoader(
+                    image_dataset_train, batch_size=1, num_workers=0
+                )
     concept_dict = OrderedDict()
     for c in concepts_order:
         concept_dict[c] = tmp_concept_dict[c]
     return validloader, class_dict, concept_dict
 
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     use_gpu = torch.cuda.is_available()
 
     if use_gpu:
@@ -648,7 +674,9 @@ if __name__ == "__main__":
         print("Doing seed", seed)
 
         current_model_path = f"{model_path}_{seed}.pth"
-        current_model_path = os.path.join("rsseval\\rss", current_model_path) # only in debug mode 
+        current_model_path = os.path.join(
+            "rsseval\\rss", current_model_path
+        )  # only in debug mode
 
         if not os.path.exists(current_model_path):
             print(f"{current_model_path} is missing...")
