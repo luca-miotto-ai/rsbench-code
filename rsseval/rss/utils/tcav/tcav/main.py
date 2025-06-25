@@ -45,6 +45,8 @@ from models.xornn import XORnn
 ############### TEST ###############
 
 from posthoc import CAV
+
+from tqdm import tqdm
 from sklearn.linear_model import SGDClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
@@ -117,9 +119,11 @@ def validate(
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     for concept, activation in scorer.activations.items():
+        print(f'🧠 CONCEPT: {concept} <--------')
         # Create balanced positive and negative sets of concept representations
         pos_sets, neg_sets = _make_concept_sets(concept, scorer.activations)
         for layer in activation:
+            print(f'🍰 LAYER: {layer} <--------')
             # Experiment parameters and results
             experiment = {
                 "dataset": dataset_name,
@@ -129,6 +133,7 @@ def validate(
                 "layer": layer,
             }
             # Instantiate post-hoc explainer for concept presence at current layer
+            print('🛠️ Creating concept classifier and post-hoc explainer')
             concept_classifier = SGDClassifier(alpha=0.01, max_iter=1000, tol=1e-3)
             posthoc_explainer = CAV(concept_classifier, device, batch_size=10)
             # Restrict representations to current layer
@@ -140,23 +145,37 @@ def validate(
             )
             assert len(representations) == len(presence)
             # Split into train and test sets for current concept and layer
+            print('⚖️ Splitting data into train and test sets')
             repr_train, repr_test, pres_train, pres_test = train_test_split(
-                representations, presence, test_size=0.2, random_state=seed
+                representations, presence, test_size=0.2, 
+                random_state=seed, stratify=presence
             )
             # Train concept classifier on representations at current layer
+            print('📚 Fitting post-hoc explainer on training data')
             posthoc_explainer.fit(repr_train, pres_train)
             # Evaluate significance of concept classifier on the training set
+            print('🔍 Evaluating significance of concept classifier')
             significant = posthoc_explainer.significant(
-                test='permutation', n_perm=1000, alpha=0.05
+                test="permutation", n_perm=1000, alpha=0.05
             )
+            experiment["significant"] = significant
             if not significant:
-                experiment["significant"] = False
-                continue # Skip to next layer
-            # Predict test concepts on representations at current layer
-            pres_pred = posthoc_explainer.predict(repr_test)
-            # Calculate accuracy of concept classifier
-            accuracy = accuracy_score(pres_test, pres_pred)
-            experiment["accuracy"] = accuracy
+                print(f'⚠️ Concept {concept} at layer {layer} not significant')
+                experiment["accuracy"] = None
+                experiment["importance"] = None
+            else:
+                # Predict test concepts on representations at current layer
+                print('🔮 Predicting concept presence on test data')
+                pres_pred = posthoc_explainer.predict(repr_test)
+                # Calculate accuracy of concept classifier
+                print('🎯 Calculating accuracy of concept classifier')
+                accuracy = accuracy_score(pres_test, pres_pred)
+                experiment["accuracy"] = accuracy
+                # Calculate concept importance at current layer
+                print('💡 Calculating concept importance')
+                importance = posthoc_explainer.concept_importance(
+                    repr_test, model.output
+                )
             
 
     # print("Calculating TCAV scores...")

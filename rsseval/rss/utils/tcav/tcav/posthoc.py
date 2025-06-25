@@ -189,9 +189,10 @@ class PostHocConceptExplainer(ABC):
         """
         if test == 'permutation':
             n_perm = kwargs.get('n_perm', 100)
+            repr_ = PostHocConceptExplainer._reshape_2d(self.representations)
             _, _, p_value = permutation_test_score(
                 self.classifier,
-                self.representations,
+                repr_,
                 self.presence,
                 n_permutations=n_perm,
                 n_jobs=n_jobs,
