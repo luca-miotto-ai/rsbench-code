@@ -445,7 +445,7 @@ class CAR(PostHocConceptExplainer):
         densities = self.concept_importance(latent_repr, to_array=False).view((-1, 1)) # FIXME: integrate np and torch flows!
         cavs = torch.autograd.grad(
             densities,
-            latent_reps,
+            latent_repr,
             grad_outputs=torch.ones((len(densities), 1)).to(self.device),
         )[0]
 

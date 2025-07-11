@@ -116,66 +116,97 @@ def validate(
     ### TEST ###
     ############
 
+    NUM_RUNS = 100  # Number of runs for averaging results
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
-    for concept, activation in scorer.activations.items():
-        print(f'🧠 CONCEPT: {concept} <--------')
-        # Create balanced positive and negative sets of concept representations
-        pos_sets, neg_sets = _make_concept_sets(concept, scorer.activations)
-        for layer in activation:
-            print(f'🍰 LAYER: {layer} <--------')
-            # Experiment parameters and results
-            experiment = {
-                "dataset": dataset_name,
-                "model": model_name,
-                "seed": seed,
-                "concept": concept,
-                "layer": layer,
-            }
-            # Instantiate post-hoc explainer for concept presence at current layer
-            print('🛠️ Creating concept classifier and post-hoc explainer')
-            concept_classifier = SGDClassifier(alpha=0.01, max_iter=1000, tol=1e-3)
-            posthoc_explainer = CAV(concept_classifier, device, batch_size=10)
-            # Restrict representations to current layer
-            pos_set, neg_set = pos_sets[layer], neg_sets[layer]
-            representations = np.concatenate((pos_set, neg_set), axis=0)
-            presence = np.concatenate(
-                (np.ones(len(pos_set), dtype=bool), 
-                 np.zeros(len(neg_set), dtype=bool))
+    # Experiment parameters and results
+    experiment = {
+        "dataset": dataset_name,
+        "model": model_name,
+        "seed": seed,
+        "runs": {}
+    }
+
+    for run in range(NUM_RUNS):
+
+        print(f'\n========== ⚡ RUN: {run} ⚡ ==========\n')
+        seed = run + seed
+        experiment["runs"][run] = {}
+        experiment["runs"][run]["concepts"] = {}
+
+        # Evaluate post-hoc explainer for each concept
+        for concept, activation in scorer.activations.items():
+
+            print(f'🧠 CONCEPT: {concept} <--------')
+            experiment["runs"][run]["concepts"][concept] = {}
+            experiment["runs"][run]["concepts"][concept]["layers"] = {}
+            label = _get_label_from_concept(concept, dataset_name, class_dict)
+            # Create balanced positive and negative sets of concept representations
+            pos_sets, neg_sets, pos_labels, neg_labels = _make_concept_sets(
+                concept, scorer.activations, dataset_name, class_dict, seed
             )
-            assert len(representations) == len(presence)
-            # Split into train and test sets for current concept and layer
-            print('⚖️ Splitting data into train and test sets')
-            repr_train, repr_test, pres_train, pres_test = train_test_split(
-                representations, presence, test_size=0.2, 
-                random_state=seed, stratify=presence
-            )
-            # Train concept classifier on representations at current layer
-            print('📚 Fitting post-hoc explainer on training data')
-            posthoc_explainer.fit(repr_train, pres_train)
-            # Evaluate significance of concept classifier on the training set
-            print('🔍 Evaluating significance of concept classifier')
-            significant = posthoc_explainer.significant(
-                test="permutation", n_perm=1000, alpha=0.05
-            )
-            experiment["significant"] = significant
-            if not significant:
-                print(f'⚠️ Concept {concept} at layer {layer} not significant')
-                experiment["accuracy"] = None
-                experiment["importance"] = None
-            else:
-                # Predict test concepts on representations at current layer
-                print('🔮 Predicting concept presence on test data')
-                pres_pred = posthoc_explainer.predict(repr_test)
-                # Calculate accuracy of concept classifier
-                print('🎯 Calculating accuracy of concept classifier')
-                accuracy = accuracy_score(pres_test, pres_pred)
-                experiment["accuracy"] = accuracy
-                # Calculate concept importance at current layer
-                print('💡 Calculating concept importance')
-                importance = posthoc_explainer.concept_importance(
-                    repr_test, model.output
+
+            # Evaluate post-hoc explainer for each layer
+            for layer in activation:
+
+                print(f'🍰 LAYER: {layer} <--------')
+                results = {}
+
+                print('🛠️ Creating concept classifier and post-hoc explainer')
+                concept_classifier = SGDClassifier(alpha=0.01, max_iter=1000, tol=1e-3)
+                posthoc_explainer = CAV(concept_classifier, device, batch_size=10)
+                
+                # Restrict representations to current layer
+                pos_set, neg_set = pos_sets[layer], neg_sets[layer]
+                representations = np.concatenate((pos_set, neg_set), axis=0)
+                labels = np.concatenate((pos_labels, neg_labels), axis=0)
+                assert len(representations) == len(labels)
+                
+                # Split into train and test sets for current concept and layer
+                print('⚖️ Splitting data into train and test sets')
+                repr_train, repr_test, label_train, label_test = train_test_split(
+                    representations, labels, test_size=0.2, 
+                    random_state=seed, stratify=labels
                 )
+                pres_train = np.array([l == label for l in label_train], dtype=bool)
+                pres_test = np.array([l == label for l in label_test], dtype=bool)
+                
+                # Train concept classifier on representations at current layer
+                print('📚 Fitting post-hoc explainer on training data')
+                posthoc_explainer.fit(repr_train, pres_train)
+                
+                # Evaluate significance of concept classifier on the training set
+                print('🔍 Evaluating significance of concept classifier')
+                significant = posthoc_explainer.significant(
+                    test="permutation", n_perm=1000, alpha=0.05
+                )
+                results["significant"] = significant
+                
+                if not significant:
+                    print(f'⚠️ Concept {concept} at layer {layer} not significant')
+                    results["accuracy"] = None
+                    results["importance"] = None
+                else:
+                    print(f'✅ Concept {concept} at layer {layer} significant')
+                    # Predict test concepts on representations at current layer
+                    print('✨ Predicting concept presence on test data')
+                    pres_pred = posthoc_explainer.predict(repr_test)
+
+                    # Calculate accuracy of concept classifier
+                    print('🎯 Calculating accuracy of concept classifier')
+                    accuracy = accuracy_score(pres_test, pres_pred)
+                    results["accuracy"] = accuracy
+                    print(f'📊 Accuracy: {round(100*accuracy, 2)} %')
+
+                    # Calculate concept importance at current layer
+                    print('💡 Calculating concept importance')
+                    importance = posthoc_explainer.concept_importance(
+                        repr_test, label_test, len(class_dict),
+                    )
+                    results["importance"] = importance
+
+                # Store results for current run, concept and layer
+                experiment["runs"][run]["concepts"][concept]["layers"][layer] = results
             
 
     # print("Calculating TCAV scores...")
@@ -184,35 +215,163 @@ def validate(
     # scorer.calculate_concept_presence(extract_layer, npy_file)
     # print(npy_file)
 
+def _get_label_from_concept(concept, dataset_name, class_dict) -> int:
+    """Get label from concept name for given dataset."""
+    if dataset_name in ["shortmnist", "clipshortmnist"]:
+        if "eighteen" in class_dict:
+            # Add MNIST 18 classes
+            return sum(int(x) for x in concept)
+        else:
+            # Regular MNIST 10 classes
+            return int(concept)
+    # TODO: add more datasets...
+    raise ValueError(f"Unknown dataset {dataset_name}")
+    
 
-def _make_concept_sets(concept, activations) -> tuple:
+def _make_concept_sets(concept, activations, dataset_name, class_dict, seed=None) -> tuple:
     """
-    Make datasets of positive and negative
-    concept representations for each layer.
+    Make datasets of positive and negative concept representations for each layer.
+    
+    Also, return labels for both sets of examples.
+
+    Parameters
+    ----------
+    concept : str
+        Name of the concept for which to create sets
+    activations : dict
+        Dictionary of activations for each concept and layer
+    dataset_name : str
+        Name of the dataset being used
+    class_dict : dict
+        Dictionary mapping concept names to integer labels
+    seed : int, optional
+        Random seed for reproducibility
+
+    Returns
+    -------
+    pos_activ_set : dict
+        Dictionary of positive concept representations for each layer
+    neg_activ_set : dict
+        Dictionary of negative concept representations for each layer
+    pos_label_set : np.ndarray
+        Array of labels for positive concept representations
+    neg_label_set : np.ndarray
+        Array of labels for negative concept representations
     """
     layers = list(activations[concept].keys())
     concepts = list(activations.keys())
-    # Positive set of representations of the concept for each layer
-    positive_set = {layer: activations[concept][layer] for layer in layers}
-    # Find negative examples for each layer
-    negative_set = {
-        layer: np.concatenate(
-            [activations[cpt][layer] for cpt in concepts if cpt != concept]
-        )
+    target_label = _get_label_from_concept(
+        concept, dataset_name, class_dict
+    )
+    # Positive set of representations 
+    # of the concept for each layer
+    pos_activ_set = activations[concept]
+    num_pos_examples = len(pos_activ_set[layers[0]])
+    assert all(activ.shape[0] == num_pos_examples 
+               for activ in pos_activ_set.values())
+    pos_label_set = np.full(num_pos_examples, target_label)
+    # Negative set of representations 
+    # of the concept for each layer
+    neg_activ_set = {
+        layer: np.concatenate([
+            activations[cpt][layer] 
+            for cpt in concepts if cpt != concept
+        ])
         for layer in layers
     }
-    # Randomly choose negative examples making
-    # balanced positive/negative sets for each layer
-    negative_set = {
-        layer: negative_set[layer][
-            np.random.choice(
-                len(negative_set[layer]), len(positive_set[layer]), replace=False
-            )
-        ]
+    # num_neg_examples = len(neg_activ_set[layers[0]])
+    # assert all(activ.shape[0] == num_neg_examples 
+    #            for activ in neg_activ_set.values())
+    neg_set_size_per_concept = {
+        cpt: activations[cpt][layers[0]].shape[0]
+        for cpt in concepts if cpt != concept
+    }
+    neg_label_set = np.concatenate([
+        np.full(neg_set_size_per_concept[cpt],
+            _get_label_from_concept(cpt, dataset_name, class_dict))
+        for cpt in concepts if cpt != concept
+    ])
+    # Randomly sample negative examples
+    # such that each class is represented
+    # at least once, and total number of examples
+    # is equal to the number of positive examples
+    neg_choices = _stratified_random_sample(
+        neg_label_set, num_pos_examples, random_state=seed
+    )
+    # Restrict negative set and labels to the chosen examples
+    neg_activ_set_ = {
+        layer: neg_activ_set[layer][neg_choices]
         for layer in layers
     }
-    # Return positive and negative sets
-    return positive_set, negative_set
+    neg_label_set_ = neg_label_set[neg_choices]
+    # Return positive and negative sets, and their respective labels
+    return pos_activ_set, neg_activ_set_, pos_label_set, neg_label_set_
+
+
+def _stratified_random_sample(labels, num_examples, random_state=None):
+    """
+    Randomly sample exactly N examples such that:
+      - Each of the K (i.e. number of unique labels) gets ~N/K samples
+      - If a class is too small to meet N/K, we pick at least 1 from it
+      - Total number of picked samples = N
+    
+    Parameters
+    ----------
+    labels : np.ndarray
+        Array of M integer labels in 0...K-1 (assumes each label appears at least once)
+    num_examples : int
+        Total number of examples to sample. Must satisfy N >= number of unique labels
+    random_state : int or np.random.RandomState, optional
+        Seed or RNG for reproducibility
+    
+    Returns
+    -------
+    idx_sample : np.ndarray
+        Indices into X, Y of the N chosen examples
+    """
+    rng = np.random.RandomState(random_state)
+    u_labels = np.unique(labels)
+    num_classes = u_labels.size
+    
+    if num_examples < num_classes:
+        raise ValueError(f"N = {num_examples} is smaller than number of classes K = {num_classes}")
+    
+    # Gather indices for each class
+    class_indices = { k: np.flatnonzero(labels == k) for k in u_labels }
+    
+    # For each class, pick at least one, at most N/K (or limited by availability)
+    base_quota = num_examples // num_classes
+    n_per_class = { k: min(class_indices[k].size, max(1, base_quota)) for k in u_labels }
+    
+    # Compute how many more to assign
+    current_total = sum(n_per_class.values())
+    to_assign = num_examples - current_total
+    
+    # Distribute the remaining slots one by one to classes with spare capacity
+    # NOTE: this loop ensures counts stay as even as possible
+    while to_assign > 0:
+        # Find classes that can accept one more sample
+        eligible = [k for k in u_labels if n_per_class[k] < class_indices[k].size]
+        if not eligible:
+            break  # no more capacity
+        for k in rng.permutation(eligible):
+            if to_assign == 0:
+                break
+            n_per_class[k] += 1
+            to_assign -= 1
+    
+    # Finally, draw the samples
+    chosen_idxs = []
+    for k in u_labels:
+        idxs = class_indices[k]
+        pick = rng.choice(idxs, size=n_per_class[k], replace=False)
+        chosen_idxs.append(pick)
+    
+    # Flatten & shuffle final selection
+    idx_sample = np.concatenate(chosen_idxs)
+    rng.shuffle(idx_sample)
+    
+    return idx_sample
 
 
 def get_model(modelname, encoder, args):
