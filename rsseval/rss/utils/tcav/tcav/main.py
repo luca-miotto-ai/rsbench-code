@@ -201,7 +201,8 @@ def validate(
                     # Calculate concept importance at current layer
                     print('💡 Calculating concept importance')
                     importance = posthoc_explainer.concept_importance(
-                        repr_test, label_test, len(class_dict),
+                        repr_test, label_test, len(class_dict), 
+                        model.get_downstream_head(layer)
                     )
                     results["importance"] = importance
 

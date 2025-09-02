@@ -2,6 +2,7 @@ from copy import deepcopy
 from torch.autograd import grad
 import torch
 import numpy as np
+from typing import Callable
 
 
 class ModelWrapper(object):
@@ -70,3 +71,31 @@ class ModelWrapper(object):
     def __call__(self, x):
         self.output = self.model(x)["YS"]
         return self.output
+
+    def get_downstream_head(self, layer) -> Callable:
+        """
+        Return the downstream head of the model starting from the given layer.
+
+        **NOTE:** given layer not included in the downstream head.
+        """
+        found = False
+        modules = []
+        if hasattr(self.model, "encoder"):
+            for name, module in self.model.encoder._modules.items():
+                if found:
+                    modules.append(module)
+                if name == layer:
+                    found = True
+        elif hasattr(self.model, "net"):
+            for name, module in self.model.net._modules.items():
+                if found:
+                    modules.append(module)
+                if name == layer:
+                    found = True
+        else:
+            for name, module in self.model._modules.items():
+                if found:
+                    modules.append(module)
+                if name == layer:
+                    found = True
+        return torch.nn.Sequential(*modules)
