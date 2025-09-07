@@ -1,28 +1,28 @@
 import torch
-import torch.nn as nn
 from collections import OrderedDict
 from typing import Optional, Union
 
 IndexLike = Union[str, int]
 
-class SliceableModule(nn.Module):
+class SliceableModule(torch.nn.Module):
+    """A module that can be sliced into sub-networks by layer names or indices."""
     
-    def __init__(self, layers: OrderedDict[str, nn.Module]):
+    def __init__(self, layers: OrderedDict[str, torch.nn.Module]):
         super().__init__()
         if not isinstance(layers, OrderedDict):
             raise TypeError("layers must be an OrderedDict[name -> nn.Module]")
-        self.net = nn.Sequential(layers)
+        self._layer_sequence = list(layers.keys())
+        for layer in layers.items():
+            name, module = layer
+            setattr(self, name, module)
 
     def forward(self, x):
-        return self.net(x)
-
-    def _modules(self):
-        if hasattr(self, "_modules"):
-            return list(self._modules.items())
-        return list(self.net._modules.keys())
+        for name in self._layer_sequence:
+            x = getattr(self, name)(x)
+        return x
 
     def _resolve(self, key: IndexLike, *, allow_end: bool = False) -> int:
-        names = self._names()
+        names = self._layer_sequence
         if isinstance(key, str):
             if key not in names:
                 raise ValueError(f"Layer name '{key}' not found. Available: {names}")
@@ -37,9 +37,9 @@ class SliceableModule(nn.Module):
         else:
             raise TypeError("Slice keys must be str (name) or int (index)")
 
-    def slice(self, from_: Optional[IndexLike] = None, to_: Optional[IndexLike] = None) -> nn.Sequential:
+    def slice(self, from_: IndexLike = None, to_: IndexLike = None) -> torch.nn.Module:
         """
-        Return a sub-network as `nn.Sequential`.
+        Return a sub-network as `SliceableModule` itself.
 
         * from_: return sub-network starting AFTER `from_` (excluded) to the end.
         * to_:   return sub-network from the beginning UP TO `to_` (included).
@@ -49,7 +49,7 @@ class SliceableModule(nn.Module):
         
         At least one of them must be provided; if both, they cannot refer to same layer.
         """
-        names = self._names()
+        names = self._layer_sequence
         n = len(names)
         
         if from_ is None and to_ is None:
@@ -63,15 +63,12 @@ class SliceableModule(nn.Module):
         if start > end:
             raise ValueError(f"Invalid slice range: start exceeds end")
 
-        if hasattr(self, "_modules"):
-
-
         selected = OrderedDict(
-            (name, self.net._modules[name]) 
+            (name, getattr(self, name)) 
             for name in names[start + 1 : end + 1]
         )
         
         if len(selected) == 0:
             raise ValueError("Invalid slice range: slice would be empty")
         
-        return nn.Sequential(selected)
+        return SliceableModule(selected)

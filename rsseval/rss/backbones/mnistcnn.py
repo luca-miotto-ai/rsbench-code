@@ -1,29 +1,51 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from collections import OrderedDict
 
+from .sliceable import SliceableModule
 
-class MNISTAdditionCNN(nn.Module):
+# class MNISTAdditionCNN(nn.Module):
+#     def __init__(self):
+#         super(MNISTAdditionCNN, self).__init__()
+#         self.conv1 = nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1)
+#         self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)
+#         self.fc1 = nn.Linear(32 * 7 * 14, 128)
+#         self.fc2 = nn.Linear(128, 64)
+#         self.fc3 = nn.Linear(64, 19)
+#         self.softmax = nn.Softmax(dim=1)
+
+#     def forward(self, x):
+#         x = F.relu(self.conv1(x))
+#         x = F.max_pool2d(x, 2, 2)
+#         x = F.relu(self.conv2(x))
+#         x = F.max_pool2d(x, 2, 2)
+#         x = x.view(-1, 32 * 7 * 14)
+#         x = F.relu(self.fc1(x))
+#         x = F.relu(self.fc2(x))
+#         x = self.softmax(self.fc3(x))
+#         return x
+
+class MNISTAdditionCNN(SliceableModule):
     def __init__(self):
-        super(MNISTAdditionCNN, self).__init__()
-        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)
-        self.fc1 = nn.Linear(32 * 7 * 14, 128)
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, 19)
-        self.softmax = nn.Softmax(dim=1)
+        layers = OrderedDict([
+            ("conv1",   nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1)),
+            ("relu1",   nn.ReLU(inplace=False)),
+            ("pool1",   nn.MaxPool2d(2, 2)),
 
-    def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.max_pool2d(x, 2, 2)
-        x = F.relu(self.conv2(x))
-        x = F.max_pool2d(x, 2, 2)
-        x = x.view(-1, 32 * 7 * 14)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.softmax(self.fc3(x))
-        return x
+            ("conv2",   nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)),
+            ("relu2",   nn.ReLU(inplace=False)),
+            ("pool2",   nn.MaxPool2d(2, 2)),
 
+            ("flatten", nn.Flatten()),
+            ("fc1",     nn.Linear(32 * 7 * 14, 128)),
+            ("relu3",   nn.ReLU(inplace=False)),
+            ("fc2",     nn.Linear(128, 64)),
+            ("relu4",   nn.ReLU(inplace=False)),
+            ("fc3",     nn.Linear(64, 19)),
+            ("softmax", nn.Softmax(dim=1)),
+        ])
+        super().__init__(layers)
 
 if __name__ == "__main__":
     model = MNISTAdditionCNN()

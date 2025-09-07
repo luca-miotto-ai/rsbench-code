@@ -199,10 +199,11 @@ def validate(
                     print(f'📊 Accuracy: {round(100*accuracy, 2)} %')
 
                     # Calculate concept importance at current layer
+                    # NOTE: assuming model has attribute 'net' which is SliceableModule
                     print('💡 Calculating concept importance')
                     importance = posthoc_explainer.concept_importance(
                         repr_test, label_test, len(class_dict), 
-                        model.get_downstream_head(layer)
+                        model.model.net.slice(from_=layer)
                     )
                     results["importance"] = importance
 
@@ -454,7 +455,6 @@ def setup():
         modelname=args.model, encoder=dataset.get_backbone()[0], args=args
     )
 
-    # set cpu for the moment
     model.device = "cuda"
 
     model.to(model.device)
