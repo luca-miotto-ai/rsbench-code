@@ -1,6 +1,7 @@
 import os
 import sys
 import torch
+import random
 import numpy as np
 
 from tcav import TCAV
@@ -178,7 +179,7 @@ def validate(
                 # Evaluate significance of concept classifier on the training set
                 print('🔍 Evaluating significance of concept classifier')
                 significant = posthoc_explainer.significant(
-                    test="permutation", n_perm=1000, alpha=0.05
+                    test="permutation", n_perm=50, alpha=0.05
                 )
                 results["significant"] = significant
                 
@@ -202,20 +203,43 @@ def validate(
                     # NOTE: assuming model has attribute 'net' which is SliceableModule
                     print('💡 Calculating concept importance')
                     importance = posthoc_explainer.concept_importance(
-                        repr_test, label_test, len(class_dict), 
+                        representations, labels, len(class_dict), 
                         model.model.net.slice(from_=layer)
                     )
-                    results["importance"] = importance
-
+                    results["importance"] = _get_importance_stats(
+                        posthoc_explainer, importance, labels
+                    )
                 # Store results for current run, concept and layer
                 experiment["runs"][run]["concepts"][concept]["layers"][layer] = results
             
+
+    print("----- TEST RESULTS -----") # FIXME
 
     # print("Calculating TCAV scores...")
     # scorer.generate_cavs(extract_layer)
     # npy_file = f"output/cavs_{dataset_name}_{model_name}_{seed}_{extract_layer}{add}.npy"
     # scorer.calculate_concept_presence(extract_layer, npy_file)
     # print(npy_file)
+
+def _get_importance_stats(explainer, importance, labels):
+    """Get importance statistics for each label."""
+    assert len(importance) == len(labels)
+    label2importance = {
+        int(l): importance[np.where(labels == l)[0]] 
+        for l in np.unique(labels)
+    }
+    perc = [0, 10, 25, 50, 75, 90, 100]
+    stats = {
+        l: {
+            "len": int(len(imp)),
+            "mean": float(np.mean(imp)),
+            "std": float(np.std(imp)),
+            "perc": np.percentile(imp, perc).tolist(),
+            "score": explainer.overall_importance(imp)
+        }
+        for l, imp in label2importance.items()
+    }
+    return stats
 
 def _get_label_from_concept(concept, dataset_name, class_dict) -> int:
     """Get label from concept name for given dataset."""
@@ -851,6 +875,10 @@ if __name__ == "__main__":
         args, dataset, model = setup()
 
         print("Doing seed", seed)
+
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
 
         current_model_path = f"{model_path}_{seed}.pth"
         current_model_path = os.path.join(

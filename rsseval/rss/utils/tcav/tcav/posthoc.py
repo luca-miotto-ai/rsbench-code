@@ -29,7 +29,7 @@ from sklearn.model_selection import permutation_test_score
 class PostHocConceptExplainer(ABC):
     """
     An abstract class that contains the interface 
-    for a generic post-hoc concept explainer
+    for a generic post-hoc concept explainer.
     """
 
     def __init__(self, classifier: ClassifierMixin, device: torch.device, batch_size: int = 50):
@@ -63,7 +63,7 @@ class PostHocConceptExplainer(ABC):
     @staticmethod
     def _hasmethod(obj: object, attr: str) -> bool:
         """
-        Check if the object has the given method
+        Check if the object has the given method.
 
         Parameters
         ----------
@@ -80,7 +80,7 @@ class PostHocConceptExplainer(ABC):
 
     @staticmethod
     def _reshape_2d(representations: np.ndarray) -> np.ndarray:
-        """Reshape N-dimensional representations into 2D matrix"""
+        """Reshape N-dimensional representations into 2D matrix."""
         return representations.reshape(
             representations.shape[0], 
             np.prod(representations.shape[1:])
@@ -96,7 +96,7 @@ class PostHocConceptExplainer(ABC):
 
     def fit(self, representations: np.ndarray, presence: np.ndarray):
         """
-        Fit the concept classifier to the dataset (concept representations and presence)
+        Fit the concept classifier to the dataset (concept representations and presence).
 
         Parameters
         ----------
@@ -115,7 +115,7 @@ class PostHocConceptExplainer(ABC):
 
     def predict(self, representations: np.ndarray) -> np.ndarray:
         """
-        Predicts the presence or absence of the concept given the latent representations
+        Predict the presence or absence of the concept given the latent representations.
         
         Parameters
         ----------
@@ -131,7 +131,7 @@ class PostHocConceptExplainer(ABC):
 
     def get_representations(self, positive: bool = True) -> np.ndarray:
         """
-        Get the latent representations of the concept
+        Get the latent representations of the concept.
 
         Parameters
         ----------
@@ -146,25 +146,12 @@ class PostHocConceptExplainer(ABC):
             raise ValueError("No latent representations available yet!")
         return self.representations[self.presence == int(positive)]
 
-    @abstractmethod
-    def concept_importance(self, representations: np.ndarray) -> np.ndarray:
-        """
-        Predicts the relevance of a concept given the latent representations
-        
-        Parameters
-        ----------
-        representations: np.ndarray
-            Latent representations of the test examples
-        
-        Returns
-        -------
-        Array of concept importance scores for each example
-        """
-
     def significant(self, test='permutation', alpha=0.05,  n_jobs=1, **kwargs) -> bool:
         """
-        Computes the p-value of the given significance test applied on the previously calculated \\
-        concept presence and decides if significant according to the given significance level `alpha`
+        Compute the p-value of the given significance test. 
+        
+        * This method applies on previously calculated concept presence
+        * This method decides if significant according to the given significance level `alpha`
 
         Parameters
         ----------
@@ -200,10 +187,40 @@ class PostHocConceptExplainer(ABC):
         else:
             raise ValueError(f"Invalid significance test \"{test}\"")
         return bool(p_value < alpha)
+    
+    @abstractmethod
+    def concept_importance(self, representations: np.ndarray) -> np.ndarray:
+        """
+        Predict the relevance of a concept given the latent representations.
+        
+        Parameters
+        ----------
+        representations: np.ndarray
+            Latent representations of the test examples
+        
+        Returns
+        -------
+        Array of concept importance scores for each example
+        """
+
+    @abstractmethod
+    def overall_importance(self, importance: np.ndarray) -> float:
+        """
+        Compute a summary score of concept importance over a set of examples.
+
+        Parameters
+        ----------
+        importance: np.ndarray
+            Array of concept importance scores for each example
+
+        Returns
+        -------
+        Summary score of concept importance
+        """
 
 class CAV(PostHocConceptExplainer):
     """
-    Concept Activation Vectors (CAV) post-hoc concept explainer
+    Concept Activation Vectors (CAV) post-hoc concept explainer.
 
     References:
         Kim, Been et al. "Interpretability Beyond Feature Attribution: 
@@ -223,7 +240,8 @@ class CAV(PostHocConceptExplainer):
         repr_to_output: Callable
     ) -> np.ndarray:
         """
-        Predicts the relevance of a concept given the latent representations.\\
+        Predict the relevance of a concept given the latent representations.
+
         Note that, concept importance for CAV is akin to concept sensitivity.
         
         Parameters
@@ -253,9 +271,30 @@ class CAV(PostHocConceptExplainer):
             cav = cav.flatten(start_dim=1)
         return torch.einsum("ij,ij->i", cav, grads).detach().cpu().numpy()
 
+    def overall_importance(self, importance: np.ndarray) -> float:
+        """
+        Compute TCAV score for class K on concept C.
+
+        Parameters
+        ----------
+        importance: np.ndarray
+            Array of concept importance scores for each example
+
+        Returns
+        -------
+        Summary score of concept importance
+
+        Remarks
+        -------
+        - This method assumes importance scores are restricted to target class K
+        - This method assumes importance scores are associated to same concept C
+        - TCAV score is the fraction of examples with positive concept importance
+        """
+        return float(np.mean(importance > 0))
+
 class CAR(PostHocConceptExplainer):
     """
-    Concept Activation Regions (CAR) post-hoc concept explainer
+    Concept Activation Regions (CAR) post-hoc concept explainer.
 
     References
     ----------
@@ -286,7 +325,7 @@ class CAR(PostHocConceptExplainer):
 
     def concept_density(self, representations: np.ndarray, positive_set: bool) -> torch.Tensor:
         """
-        Computes the concept density for the given latent representations
+        Compute the concept density for the given latent representations.
 
         Parameters
         ----------
@@ -307,7 +346,7 @@ class CAR(PostHocConceptExplainer):
 
     def _kernel_function(self) -> Callable:
         """
-        Get the kernel function underlying the CAR
+        Get the kernel function underlying the CAR.
 
         Returns
         -------
@@ -327,7 +366,7 @@ class CAR(PostHocConceptExplainer):
     @staticmethod
     def _gaussian_rbf(epsilon: float = 1.0) -> Callable:
         """
-        Get the Gaussian RBF kernel function
+        Get the Gaussian RBF kernel function.
 
         Parameters
         ----------
@@ -345,7 +384,7 @@ class CAR(PostHocConceptExplainer):
     def tune_kernel_width(self, representations: np.ndarray, presence: np.ndarray):
         """
         Tune the kernel width to achieve good training 
-        classification accuracy with a Parzen classifier
+        classification accuracy with a Parzen classifier.
 
         Parameters
         ----------
@@ -419,7 +458,8 @@ class CAR(PostHocConceptExplainer):
         repr_to_output: Callable
     ) -> np.ndarray:
         """
-        Predicts the relevance of a concept given the latent representations.\\
+        Predict the relevance of a concept given the latent representations.
+        
         Note that, concept importance for CAV is akin to concept sensitivity.
         
         Parameters
